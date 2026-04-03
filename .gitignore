@@ -1,0 +1,27 @@
+# ─── Environment ─────────────────────────────────────────────────────────────
+.env
+*.env.local
+
+# ─── n8n local data (managed by Docker volume, not git) ──────────────────────
+.n8n/
+n8n_data/
+
+# ─── OS / Editor ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+
+# ─── Cursor internal (plans are versioned, rules are versioned) ───────────────
+# Nothing to ignore in .cursor/ by default
+
+# ─── Secrets — belt and suspenders ──────────────────────────────────────────
+# If you ever accidentally create these, git will refuse them
+credentials.json
+secrets.json
+*.pem
+*.key
+*_secret*
+*_token*

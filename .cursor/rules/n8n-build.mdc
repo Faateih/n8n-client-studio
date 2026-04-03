@@ -1,0 +1,46 @@
+---
+description: Rules for building n8n workflows in this repo
+globs: clients/**/*.json, clients/**/*.md, shared/**/*.json
+alwaysApply: false
+---
+
+# n8n Workflow Build Rules
+
+## Structure
+- One workflow = one business outcome. If it does two things, split it.
+- Build in this order: Trigger → Validate → Transform → Logic → Output
+- Every webhook workflow must have a structured error response path
+
+## Naming
+- Workflow names: `kebab-case`, verb-noun (e.g., `lead-intake`, `invoice-send`)
+- Node names: Title Case, action-focused (e.g., `Validate Fields`, `Return Error`)
+- Exported filename must match the workflow name exactly: `lead-intake.json`
+
+## Credentials
+- Never put API keys, tokens, or secrets in workflow JSON or payloads
+- All credentials go in the n8n Credentials UI only
+- Check `credentials-checklist.md` in the client folder before building
+
+## Error Handling
+- Add error branches on all nodes that call external services
+- Return this shape from webhook errors:
+  ```json
+  { "success": false, "error": "<slug>", "fields": [], "received_at": "<iso>" }
+  ```
+
+## Code Nodes
+- Use built-in nodes first. Only use Code nodes when there is no alternative.
+- Keep Code nodes under 30 lines. Name them clearly.
+
+## Testing
+- Every workflow needs at least two test payloads: happy-path and one error case
+- Test payloads live in `clients/<name>/payloads/`
+- Run both before exporting
+
+## Export and Commit
+- Export workflow JSON after every meaningful change
+- Save to `clients/<name>/workflows/<workflow-name>.json`
+- Commit with: `feat(<client>): <what changed>`
+
+## Output Metadata
+- Include `workflow_version`, `received_at`, and `lead_status` (or equivalent) in all webhook responses

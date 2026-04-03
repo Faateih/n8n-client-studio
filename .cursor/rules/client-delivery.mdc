@@ -1,0 +1,58 @@
+---
+description: Rules for packaging and delivering client workflows
+globs: clients/**
+alwaysApply: false
+---
+
+# Client Delivery Rules
+
+## One Client = One Folder
+Each client gets exactly one folder under `clients/`. Never mix client files.
+
+```
+clients/
+  acme-corp/
+    README.md
+    requirements.md
+    credentials-checklist.md
+    workflows/
+    payloads/
+    prompts/
+```
+
+## Required Files Per Client
+Before marking a workflow as deliverable, the client folder must have:
+- `README.md` — what the workflow does and how to use it
+- `requirements.md` — trigger, input, output, test plan
+- `credentials-checklist.md` — every credential needed, with setup instructions
+- At least one workflow JSON in `workflows/`
+- At least two test payloads in `payloads/`
+
+## Credentials Checklist Rule
+The checklist must list:
+- The credential name (as it appears in n8n)
+- The credential type
+- Where the client gets the value (their dashboard, their IT team, etc.)
+- Any special notes (scopes required, sandbox vs. production, etc.)
+
+## What to Deliver
+Send the client:
+1. Workflow JSON (they import it)
+2. `credentials-checklist.md`
+3. Test payloads
+4. Client `README.md`
+
+## Never Deliver
+- `.env` files
+- Any file containing real credentials
+- Internal plans or scratch notes from `.cursor/plans/`
+
+## Delivery Sign-Off
+Run through `docs/delivery-checklist.md` before every handoff. Check every box.
+
+## Version Your Exports
+Commit the workflow JSON immediately after export. Use clear commit messages:
+```
+feat(acme-corp): initial lead-intake workflow
+fix(acme-corp): handle missing email field
+```

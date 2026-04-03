@@ -1,0 +1,186 @@
+{
+  "name": "lead-intake-test",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake-test",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "lead-intake-test-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate that required fields are present and non-empty\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst required = ['name', 'email'];\nconst missing = required.filter(field => {\n  const val = body[field];\n  return !val || String(val).trim() === '';\n});\n\nif (missing.length > 0) {\n  return [{\n    json: {\n      valid: false,\n      missingFields: missing,\n      received_at: new Date().toISOString(),\n      body\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    body\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0002-0002-0002-000000000002",
+      "name": "Validate Required Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000003",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize the payload and add metadata\nconst body = $json.body;\n\nconst lead = {\n  name: String(body.name).trim(),\n  email: String(body.email).trim().toLowerCase(),\n  source: body.source ? String(body.source).trim() : 'unknown',\n  message: body.message ? String(body.message).trim() : '',\n  lead_status: 'new',\n  received_at: new Date().toISOString(),\n  workflow_version: '1.0.0'\n};\n\nreturn [{ json: lead }];"
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000004",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, lead: $json }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a1b2c3d4-0005-0005-0005-000000000005",
+      "name": "Return Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: 'missing_required_fields', fields: $json.missingFields, received_at: $json.received_at }) }}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a1b2c3d4-0006-0006-0006-000000000006",
+      "name": "Return Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Required Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Required Fields": {
+      "main": [
+        [
+          {
+            "node": "Is Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [
+          {
+            "node": "Normalize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Payload": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "example-client"
+    },
+    {
+      "name": "test"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": ""
+  },
+  "pinData": {}
+}

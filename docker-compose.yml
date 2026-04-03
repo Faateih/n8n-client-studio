@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-studio
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # Instance identity
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678}
+
+      # Database — SQLite (default, no config needed)
+      - DB_TYPE=sqlite
+      - DB_SQLITE_DATABASE=/home/node/.n8n/database.sqlite
+
+      # Auth
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-changeme}
+
+      # Execution settings
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - EXECUTIONS_DATA_MAX_AGE=336       # keep 14 days of execution history
+      - EXECUTIONS_DATA_PRUNE=true
+
+      # Timezone
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-America/New_York}
+
+      # Disable telemetry for local dev
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./shared/subworkflows:/home/node/subworkflows:ro
+    networks:
+      - n8n_net
+
+volumes:
+  n8n_data:
+    driver: local
+
+networks:
+  n8n_net:
+    driver: bridge

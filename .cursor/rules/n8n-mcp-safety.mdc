@@ -1,0 +1,39 @@
+---
+description: Safety rules for using n8n MCP inside Cursor
+globs: .cursor/**
+alwaysApply: true
+---
+
+# n8n MCP Safety Rules
+
+MCP is a dev/debug tool. It is connected to your local n8n instance only.
+
+## Allowed MCP Actions
+- List and inspect workflows
+- Read execution results and errors
+- Trigger a single test execution with a specific payload
+- Make small, targeted edits to a workflow node
+
+## Prohibited MCP Actions
+- Do not create or modify credentials via MCP
+- Do not run workflows in loops or bulk
+- Do not use MCP to deploy or publish anything
+- Do not chain multiple MCP write actions without checking results between each
+
+## Before Any MCP Edit
+1. Export the current workflow JSON first (rollback point)
+2. Make the edit via MCP
+3. Open the workflow in the n8n UI and verify it looks correct
+4. Run a test execution
+5. Only commit if the test passes
+
+## Safe Dev Loop
+```
+plan → build in UI → test → inspect with MCP → export JSON → commit
+```
+
+## One Action at a Time
+Never issue multiple MCP write commands in a single message. Check the result of each action before proceeding.
+
+## MCP Is Not a Replacement for the n8n UI
+Build and connect nodes in the n8n UI. Use MCP to inspect, debug, and make small corrections. Do not build entire workflows through MCP.
