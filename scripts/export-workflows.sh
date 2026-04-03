@@ -12,7 +12,7 @@
 # Requirements:
 #   - n8n running locally (docker compose up -d)
 #   - curl, jq
-#   - .env file with N8N_BASIC_AUTH_USER, N8N_BASIC_AUTH_PASSWORD, N8N_PORT
+#   - .env file with N8N_API_KEY, N8N_PORT
 
 set -euo pipefail
 
@@ -20,8 +20,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$ROOT_DIR/.env"
+ENV_PARENT="$ROOT_DIR/../.env"
 
-# Load .env if it exists
+# Parent .env first, then repo .env overrides
+if [[ -f "$ENV_PARENT" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$ENV_PARENT"; set +a
+fi
 if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   set -a; source "$ENV_FILE"; set +a
@@ -29,8 +34,6 @@ fi
 
 N8N_HOST="${N8N_HOST:-localhost}"
 N8N_PORT="${N8N_PORT:-5678}"
-N8N_USER="${N8N_BASIC_AUTH_USER:-admin}"
-N8N_PASS="${N8N_BASIC_AUTH_PASSWORD:-changeme}"
 N8N_BASE_URL="http://${N8N_HOST}:${N8N_PORT}"
 CLIENT_FILTER=""
 
@@ -59,8 +62,22 @@ check_deps() {
   done
 }
 
+require_api_key() {
+  if [[ -z "${N8N_API_KEY:-}" ]]; then
+    echo "Error: N8N_API_KEY is not set."
+    echo ""
+    echo "The n8n REST API requires header X-N8N-API-KEY."
+    echo "  1. Open n8n → Settings → API → Create an API key"
+    echo "  2. Add N8N_API_KEY=... to ${ENV_FILE} or ${ENV_PARENT}"
+    exit 1
+  fi
+}
+
 n8n_api() {
-  curl -s -u "${N8N_USER}:${N8N_PASS}" "$@"
+  curl -s \
+    -H "X-N8N-API-KEY: ${N8N_API_KEY}" \
+    -H "Accept: application/json" \
+    "$@"
 }
 
 slugify() {
@@ -69,22 +86,23 @@ slugify() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 check_deps
+require_api_key
 
 echo "Connecting to n8n at $N8N_BASE_URL ..."
 
 # Fetch all workflows
 WORKFLOWS=$(n8n_api "${N8N_BASE_URL}/api/v1/workflows?limit=100")
 
-if ! echo "$WORKFLOWS" | jq -e '.data' &>/dev/null; then
-  echo "Error: could not fetch workflows. Is n8n running?"
+if ! echo "$WORKFLOWS" | jq -e '.data | type == "array"' &>/dev/null; then
+  echo "Error: could not list workflows. Is n8n running? Is N8N_API_KEY set in .env?"
   echo "Response: $WORKFLOWS"
   exit 1
 fi
 
-COUNT=$(echo "$WORKFLOWS" | jq '.data | length')
+COUNT=$(echo "$WORKFLOWS" | jq '(.data // []) | length')
 echo "Found $COUNT workflow(s)"
 
-echo "$WORKFLOWS" | jq -c '.data[]' | while IFS= read -r workflow; do
+echo "$WORKFLOWS" | jq -c '(.data // [])[]' | while IFS= read -r workflow; do
   WF_ID=$(echo "$workflow" | jq -r '.id')
   WF_NAME=$(echo "$workflow" | jq -r '.name')
   WF_SLUG=$(slugify "$WF_NAME")

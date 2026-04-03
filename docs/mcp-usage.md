@@ -86,25 +86,51 @@ MCP may suggest workflow changes that look correct but miss business context. Al
 
 ## Connecting MCP to Cursor
 
-Add to your Cursor MCP config (`~/.cursor/mcp.json` or via Cursor Settings → MCP):
+**1.** Create an API key in n8n: **Settings → API** (same key you can put in `N8N_API_KEY` in `.env` for import/export scripts).
+
+**2.** In Cursor: **Settings → MCP** (or **Cursor Settings → Features → MCP**), add a server, **or** edit `~/.cursor/mcp.json` manually.
+
+**3.** Use the official **[n8n-mcp](https://www.npmjs.com/package/n8n-mcp)** package (see its README for the latest env names). A typical **local** setup with **n8n management tools** (workflows, executions, etc.) looks like:
 
 ```json
 {
   "mcpServers": {
-    "n8n": {
+    "n8n-mcp": {
       "command": "npx",
-      "args": ["-y", "n8n-mcp"],
+      "args": ["n8n-mcp"],
       "env": {
-        "N8N_HOST": "http://localhost:5678",
-        "N8N_USERNAME": "admin",
-        "N8N_PASSWORD": "changeme"
+        "MCP_MODE": "stdio",
+        "LOG_LEVEL": "error",
+        "DISABLE_CONSOLE_OUTPUT": "true",
+        "N8N_API_URL": "http://localhost:5678",
+        "N8N_API_KEY": "paste-your-n8n-api-key-here"
       }
     }
   }
 }
 ```
 
-Replace `changeme` with the password from your `.env` file. This config lives on your machine only — do not commit it to the repo.
+- **`MCP_MODE`: `stdio`** — required for desktop-style MCP clients so logs do not break the protocol (per n8n-mcp docs).
+- **`N8N_API_URL`** — base URL of your n8n instance (no path to `/api/v1` unless the package docs say otherwise).
+- **`N8N_API_KEY`** — same value as in your `.env`; n8n’s API uses **`X-N8N-API-KEY`**, which this server sends for you.
+
+**4.** Restart Cursor (or reload MCP) after saving.
+
+Keep this file **only on your machine** — do not commit API keys to git.
+
+If tools only show **node documentation** and not your instance, check that **`N8N_API_URL`** and **`N8N_API_KEY`** are set and that the key is valid. For package-specific options, see [n8n-mcp on GitHub](https://github.com/czlonkowski/n8n-mcp).
+
+### Troubleshooting: `spawn npx ENOENT`
+
+Cursor launches MCP with a minimal environment; it may not find **`npx`** on `PATH` (common with **nvm** / **fnm**). Run `which npx` in a terminal and set the MCP **`command`** to that **full path** (e.g. `/opt/homebrew/bin/npx`), not the bare word `npx`. Reload the window after editing `~/.cursor/mcp.json`.
+
+### Troubleshooting: `env: node: No such file or directory`
+
+`npx` was found (full path works) but **`node` is not on `PATH`** when Cursor spawns the process. Add **`PATH`** to the MCP server’s **`env`** so it includes Homebrew’s bin directory, for example:
+
+`"PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"`
+
+(Adjust if Node is installed elsewhere.) Then reload the window.
 
 ---
 

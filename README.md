@@ -24,6 +24,8 @@ open http://localhost:5678
 
 Login with the user/password from your `.env` file (default: `admin` / `changeme`).
 
+After first login, add **`N8N_API_KEY`** to the same `.env` file (n8n → **Settings → API** → create key). Import/export scripts and the API require `X-N8N-API-KEY`; basic auth alone is not enough. See `docs/setup.md`.
+
 ---
 
 ## Folder Layout
@@ -88,10 +90,8 @@ docker compose logs -f n8n
 # Restart after config change
 docker compose down && docker compose up -d
 
-# Export all active workflows to clients/<name>/workflows/
+# Export / import (require N8N_API_KEY in .env — see docs/setup.md)
 ./scripts/export-workflows.sh
-
-# Import a workflow JSON into n8n
 ./scripts/import-workflows.sh clients/example-client/workflows/lead-intake-test.json
 ```
 

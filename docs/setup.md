@@ -34,6 +34,24 @@ open http://localhost:5678
 
 n8n runs as a single container. Data is stored in a Docker-managed named volume (`n8n_data`), using SQLite. Nothing is written to your host filesystem outside of Docker.
 
+### API key (for import/export scripts and MCP)
+
+The n8n REST API (`/api/v1/...`) requires the **`X-N8N-API-KEY`** header. **Basic auth only protects the web UI** — it does not satisfy API requests.
+
+1. Open n8n → **Settings** → **API** (wording may vary slightly by n8n version).
+2. Create an API key and copy it (you may only see it once).
+3. Add it to **`n8n-client-studio/.env`** — the file in the **same directory as `docker-compose.yml`**:
+
+   ```bash
+   N8N_API_KEY=paste-your-key-here
+   ```
+
+   The import/export scripts load **`../.env` first** (e.g. `Documents/n8n/.env`), then **`n8n-client-studio/.env`**, so repo values override the parent. You can keep `N8N_API_KEY` in either file.
+
+4. Run scripts from the repo root: `cd n8n-client-studio && ./scripts/import-workflows.sh ...`
+
+Do not commit `.env`. This key is for **your local n8n instance**, not third-party services.
+
 ---
 
 ## 2. Stopping and Restarting
