@@ -1,0 +1,590 @@
+{
+  "name": "med-spa-enrichment-qualifier",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 */15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "eq-0",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "eq-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg1",
+              "name": "spreadsheetId",
+              "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "cfg2",
+              "name": "rawResultsSheet",
+              "value": "Raw Results",
+              "type": "string"
+            },
+            {
+              "id": "cfg3",
+              "name": "qualifiedLeadsSheet",
+              "value": "Qualified Leads",
+              "type": "string"
+            },
+            {
+              "id": "cfg4",
+              "name": "maxBusinessesPerRun",
+              "value": "25",
+              "type": "string"
+            },
+            {
+              "id": "cfg-lock-1",
+              "name": "leaseMinutes",
+              "value": "30",
+              "type": "string"
+            },
+            {
+              "id": "cfg-lock-2",
+              "name": "maxAttempts",
+              "value": "3",
+              "type": "string"
+            },
+            {
+              "id": "cfg-events",
+              "name": "leadEventsSheet",
+              "value": "Lead Events",
+              "type": "string"
+            },
+            {
+              "id": "cfg-errors",
+              "name": "errorLogSheet",
+              "value": "Error Log",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "eq-2",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.rawResultsSheet }}",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "eq-3",
+      "name": "Read Raw Results",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst maxBusinesses = Number(cfg.maxBusinessesPerRun || 25);\nconst now = Date.now();\nconst upper = value => String(value || '').toUpperCase();\nconst isDue = row => !row.next_retry_at || Date.parse(row.next_retry_at) <= now;\nconst leaseExpired = row => !row.lease_until || Date.parse(row.lease_until) <= now;\nconst selectable = row => {\n  const status = upper(row.pipeline_status || row.status);\n  if (['SCRAPED', 'FAILED_RETRYABLE'].includes(status)) return true;\n  return status === 'ENRICHING' && leaseExpired(row);\n};\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => Boolean(row.website))\n  .filter(row => selectable(row))\n  .filter(row => Number(row.attempt_count || 0) < Number(row.max_attempts || cfg.maxAttempts || 3))\n  .filter(row => isDue(row) && leaseExpired(row))\n  .sort((a, b) => {\n    const aTime = a.last_checked_at ? Date.parse(a.last_checked_at) : 0;\n    const bTime = b.last_checked_at ? Date.parse(b.last_checked_at) : 0;\n    return aTime - bTime;\n  })\n  .slice(0, maxBusinesses)\n  .map(row => ({ json: row }));\n"
+      },
+      "id": "eq-4",
+      "name": "Select Businesses For Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        950,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst basePaths = ['', '/contact', '/about', '/team', '/locations'];\nconst normalize = (url = '') => String(url || '').replace(/\\/$/, '');\nconst now = new Date();\nconst leaseUntil = new Date(now.getTime() + Number(cfg.leaseMinutes || 30) * 60 * 1000).toISOString();\nconst leaseOwner = 'enrichment:' + ($execution.id || Date.now());\nconst rows = [];\nfor (const [index, item] of $input.all().entries()) {\n  const website = normalize(item.json.website);\n  if (!website) continue;\n  for (const path of basePaths) {\n    rows.push({\n      json: {\n        ...item.json,\n        pipeline_status: 'ENRICHING',\n        status: 'ENRICHING',\n        stage: 'enrichment',\n        attempt_count: Number(item.json.attempt_count || 0) + 1,\n        max_attempts: Number(item.json.max_attempts || cfg.maxAttempts || 3),\n        lease_owner: leaseOwner,\n        lease_until: leaseUntil,\n        updated_at: now.toISOString(),\n        fetch_url: website + path,\n        page_label: path || '/',\n      },\n      pairedItem: { item: index },\n    });\n  }\n}\nreturn rows;\n"
+      },
+      "id": "eq-5",
+      "name": "Build Fetch Targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.fetch_url }}",
+        "options": {
+          "response": {
+            "neverError": true
+          }
+        }
+      },
+      "id": "eq-6",
+      "name": "Fetch Website Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        340
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const fetchTargets = $('Build Fetch Targets').all();\nreturn $input.all().map((item) => {\n  const responseJson = item.json;\n  const paired = item.pairedItem;\n  const sourceIndex = Array.isArray(paired) ? paired[0]?.item : paired?.item;\n  const source = fetchTargets[sourceIndex]?.json || {};\n  const failed = Boolean(responseJson.error || responseJson.errorMessage || responseJson.statusCode >= 400);\n  const html = failed ? '' : (typeof responseJson === 'string'\n    ? responseJson\n    : String(responseJson.body || responseJson.data || JSON.stringify(responseJson)));\n  const emailMatches = Array.from(new Set((html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi) || []).map(v => v.toLowerCase())));\n  const instagramMatch = html.match(/https?:\\/\\/(?:www\\.)?instagram\\.com\\/[^\"'\\s<]+/i);\n  const facebookMatch = html.match(/https?:\\/\\/(?:www\\.)?facebook\\.com\\/[^\"'\\s<]+/i);\n  const hasContactForm = /<form[\\s>][\\s\\S]{0,800}?(contact|book|appointment|consult)/i.test(html);\n  return {\n    json: {\n      ...source,\n      page_label: source.page_label || '',\n      page_html: html.slice(0, 200000),\n      page_failed: failed,\n      page_error: failed ? String(responseJson.errorMessage || responseJson.message || responseJson.error || ('HTTP ' + (responseJson.statusCode || 'error'))) : '',\n      emails_found: emailMatches,\n      instagram_url: instagramMatch ? instagramMatch[0] : '',\n      facebook_url: facebookMatch ? facebookMatch[0] : '',\n      contact_form_present: hasContactForm,\n    },\n    pairedItem: paired,\n  };\n});\n"
+      },
+      "id": "eq-7",
+      "name": "Extract Contact Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(item => item.json);\nconst groups = new Map();\nconst qualifyText = value => /med spa|medical spa|aesthetic|cosmetic|injectable|dermal|laser|skin rejuvenation|botox/i.test(String(value || ''));\nconst retryAt = attempt => new Date(Date.now() + Math.min(360, 15 * Math.pow(4, Math.max(0, attempt - 1))) * 60 * 1000).toISOString();\nfor (const item of items) {\n  const key = item.lead_id || item.raw_result_key;\n  if (!groups.has(key)) {\n    groups.set(key, {\n      ...item,\n      emails: new Set(),\n      instagram_url: '',\n      facebook_url: '',\n      contact_page: '',\n      contact_form_present: false,\n      page_text: '',\n      page_failures: [],\n    });\n  }\n  const group = groups.get(key);\n  for (const email of item.emails_found || []) group.emails.add(email);\n  if (!group.instagram_url && item.instagram_url) group.instagram_url = item.instagram_url;\n  if (!group.facebook_url && item.facebook_url) group.facebook_url = item.facebook_url;\n  if (!group.contact_page && /\\/contact$/i.test(item.fetch_url || '')) group.contact_page = item.fetch_url;\n  group.contact_form_present = group.contact_form_present || Boolean(item.contact_form_present);\n  group.page_text += ' ' + (item.page_html || '');\n  if (item.page_failed) group.page_failures.push(item.page_error || 'fetch_failed');\n}\nconst now = new Date().toISOString();\nconst rows = [];\nfor (const group of groups.values()) {\n  const categoryHit = qualifyText(group.category);\n  const siteHit = qualifyText(group.page_text);\n  const keywordHit = qualifyText(group.keyword);\n  const allPagesFailed = group.page_failures.length > 0 && !group.page_text.trim();\n  const attempts = Number(group.attempt_count || 1);\n  const maxAttempts = Number(group.max_attempts || 3);\n  const qualified = categoryHit || siteHit || keywordHit;\n  const failedTerminal = allPagesFailed && attempts >= maxAttempts;\n  const pipelineStatus = allPagesFailed ? (failedTerminal ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE') : (qualified ? 'ENRICHED' : 'DISQUALIFIED');\n  const qualificationStatus = qualified ? 'qualified' : (allPagesFailed ? 'unknown' : 'disqualified');\n  const emails = Array.from(group.emails.values()).filter(email => !/noreply|no-reply|donotreply/i.test(email));\n  rows.push({\n    json: {\n      lead_id: group.lead_id || group.raw_result_key || group.dedupe_key,\n      dedupe_key: group.dedupe_key || group.lead_id,\n      identity_strategy: group.identity_strategy || '',\n      identity_key: group.identity_key || '',\n      duplicate_of_lead_id: group.duplicate_of_lead_id || '',\n      business_name: group.business_name,\n      business_name_normalized: group.business_name_normalized || '',\n      category: group.category,\n      city: group.city,\n      state: group.state,\n      state_code: group.state_code || '',\n      country: group.country || 'US',\n      full_address: group.full_address,\n      phone: group.phone,\n      phone_e164: group.phone_e164 || '',\n      website: group.website,\n      domain: group.domain,\n      email: emails[0] || '',\n      contact_page: group.contact_page || '',\n      instagram_url: group.instagram_url || '',\n      facebook_url: group.facebook_url || '',\n      google_maps_url: group.google_maps_url,\n      rating: group.rating,\n      review_count: group.review_count,\n      matched_keywords: group.matched_keywords,\n      primary_keyword: group.keyword,\n      source_query_template: group.source_query_template,\n      source_query_executed: group.source_query_executed,\n      qualification_status: qualificationStatus,\n      qualification_reason: qualified ? (categoryHit ? 'matched_google_category' : (siteHit ? 'matched_website_services' : 'matched_source_keyword')) : (allPagesFailed ? 'website_fetch_failed' : 'not_med_spa_match'),\n      pipeline_status: pipelineStatus,\n      status: pipelineStatus,\n      stage: 'enrichment',\n      attempt_count: attempts,\n      max_attempts: maxAttempts,\n      next_retry_at: pipelineStatus === 'FAILED_RETRYABLE' ? retryAt(attempts) : '',\n      lease_owner: '',\n      lease_until: '',\n      first_seen_at: group.first_seen_at || now,\n      last_seen_at: group.last_seen_at || now,\n      last_checked_at: now,\n      last_error_stage: allPagesFailed ? 'enrichment' : '',\n      last_error_code: allPagesFailed ? 'WEBSITE_FETCH_FAILED' : '',\n      last_error: allPagesFailed ? group.page_failures.join(' | ').slice(0, 1000) : '',\n      ghl_sync_status: group.ghl_sync_status || (qualified ? 'pending' : 'skipped'),\n      ghl_contact_id: group.ghl_contact_id || '',\n      ghl_last_sync_at: group.ghl_last_sync_at || '',\n      ghl_error: group.ghl_error || '',\n      done_at: group.done_at || '',\n      schema_version: group.schema_version || 'v1',\n      notes: group.contact_form_present ? 'Contact form detected on site' : '',\n    },\n  });\n}\nreturn rows;\n"
+      },
+      "id": "eq-8",
+      "name": "Consolidate Qualified Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.qualifiedLeadsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "lead_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "eq-9",
+      "name": "Upsert Qualified Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $('Consolidate Qualified Leads').all().map(item => ({\n  json: {\n    lead_id: item.json.lead_id,\n    raw_result_key: item.json.lead_id,\n    dedupe_key: item.json.dedupe_key || item.json.lead_id,\n    pipeline_status: item.json.pipeline_status,\n    status: item.json.pipeline_status,\n    qualification_status: item.json.qualification_status,\n    stage: 'enrichment',\n    attempt_count: item.json.attempt_count,\n    max_attempts: item.json.max_attempts,\n    next_retry_at: item.json.next_retry_at,\n    lease_owner: '',\n    lease_until: '',\n    last_checked_at: now,\n    last_error_stage: item.json.last_error_stage,\n    last_error_code: item.json.last_error_code,\n    last_error: item.json.last_error,\n    updated_at: now,\n    schema_version: item.json.schema_version || 'v1',\n  }\n}));\n"
+      },
+      "id": "eq-build-raw-result-checkpoints",
+      "name": "Build Raw Result Checkpoints",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.rawResultsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "lead_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "eq-upsert-raw-result-checkpoints",
+      "name": "Upsert Raw Result Checkpoints",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        520
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "eq-build-lead-events",
+      "name": "Build Enrichment Lead Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        340
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all().map(item => ({\n  json: {\n    event_id: 'enrichment-' + (item.json.lead_id || item.json.dedupe_key) + '-' + Date.now(),\n    lead_id: item.json.lead_id || item.json.dedupe_key || '',\n    search_job_id: item.json.search_job_id || item.json.queue_key || '',\n    workflow_name: 'med-spa-enrichment-qualifier',\n    execution_id: String($execution.id || ''),\n    from_status: 'SCRAPED',\n    to_status: item.json.pipeline_status || item.json.status || '',\n    stage: 'enrichment',\n    message: item.json.qualification_reason || 'Enrichment completed',\n    event_payload: JSON.stringify({ email: item.json.email, contact_page: item.json.contact_page, qualification_status: item.json.qualification_status }),\n    created_at: now,\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "eq-append-lead-events",
+      "name": "Append Enrichment Lead Events",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2400,
+        340
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.leadEventsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "eq-build-error-log",
+      "name": "Build Enrichment Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        520
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => ['FAILED_RETRYABLE', 'FAILED_TERMINAL'].includes(String(row.pipeline_status || row.status || '').toUpperCase()))\n  .map(row => ({\n    json: {\n      error_id: 'enrichment-' + (row.lead_id || row.dedupe_key || Date.now()) + '-' + Date.now(),\n      workflow_name: 'med-spa-enrichment-qualifier',\n      execution_id: String($execution.id || ''),\n      record_type: 'lead',\n      record_id: row.lead_id || row.dedupe_key || '',\n      lead_id: row.lead_id || row.dedupe_key || '',\n      search_job_id: row.search_job_id || row.queue_key || '',\n      stage: 'enrichment',\n      attempt_count: row.attempt_count || 0,\n      error_code: row.last_error_code || 'ENRICHMENT_ERROR',\n      error_message: row.last_error || '',\n      raw_error_json: JSON.stringify(row),\n      retryable: String(row.pipeline_status || row.status || '').toUpperCase() === 'FAILED_RETRYABLE' ? 'true' : 'false',\n      next_retry_at: row.next_retry_at || '',\n      created_at: now,\n    }\n  }));\n"
+      }
+    },
+    {
+      "id": "eq-append-error-log",
+      "name": "Append Enrichment Error Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2400,
+        520
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.errorLogSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "error_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Read Raw Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Raw Results": {
+      "main": [
+        [
+          {
+            "node": "Select Businesses For Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Businesses For Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Build Fetch Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fetch Targets": {
+      "main": [
+        [
+          {
+            "node": "Fetch Website Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website Page": {
+      "main": [
+        [
+          {
+            "node": "Extract Contact Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Contact Signals": {
+      "main": [
+        [
+          {
+            "node": "Consolidate Qualified Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidate Qualified Leads": {
+      "main": [
+        [
+          {
+            "node": "Upsert Qualified Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Raw Result Checkpoints",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Enrichment Lead Events",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Enrichment Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Raw Result Checkpoints": {
+      "main": [
+        [
+          {
+            "node": "Upsert Raw Result Checkpoints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enrichment Lead Events": {
+      "main": [
+        [
+          {
+            "node": "Append Enrichment Lead Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enrichment Error Log": {
+      "main": [
+        [
+          {
+            "node": "Append Enrichment Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "med-spa-ghl"
+    },
+    {
+      "name": "enrichment"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": ""
+  },
+  "pinData": {}
+}

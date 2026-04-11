@@ -1,0 +1,622 @@
+{
+  "name": "med-spa-ghl-sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 */15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "gs-0",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "gs-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg1",
+              "name": "spreadsheetId",
+              "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "cfg2",
+              "name": "qualifiedLeadsSheet",
+              "value": "Qualified Leads",
+              "type": "string"
+            },
+            {
+              "id": "cfg3",
+              "name": "ghlSyncLogSheet",
+              "value": "GHL Sync Log",
+              "type": "string"
+            },
+            {
+              "id": "cfg4",
+              "name": "ghlBaseUrl",
+              "value": "https://services.leadconnectorhq.com",
+              "type": "string"
+            },
+            {
+              "id": "cfg5",
+              "name": "ghlApiVersion",
+              "value": "2021-07-28",
+              "type": "string"
+            },
+            {
+              "id": "cfg6",
+              "name": "ghlLocationId",
+              "value": "REPLACE_WITH_GHL_LOCATION_ID",
+              "type": "string"
+            },
+            {
+              "id": "cfg8",
+              "name": "googleMapsFieldId",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg9",
+              "name": "matchedKeywordsFieldId",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg10",
+              "name": "dedupeKeyFieldId",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg11",
+              "name": "maxSyncPerRun",
+              "value": "50",
+              "type": "string"
+            },
+            {
+              "id": "cfg12",
+              "name": "syncEnabled",
+              "value": "false",
+              "type": "string"
+            },
+            {
+              "id": "cfg13",
+              "name": "leaseMinutes",
+              "value": "30",
+              "type": "string"
+            },
+            {
+              "id": "cfg14",
+              "name": "maxAttempts",
+              "value": "5",
+              "type": "string"
+            },
+            {
+              "id": "cfg15",
+              "name": "leadEventsSheet",
+              "value": "Lead Events",
+              "type": "string"
+            },
+            {
+              "id": "cfg16",
+              "name": "errorLogSheet",
+              "value": "Error Log",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "gs-2",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.qualifiedLeadsSheet }}",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "gs-3",
+      "name": "Read Qualified Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst maxSync = Number(cfg.maxSyncPerRun || 50);\nconst now = Date.now();\nconst lower = value => String(value || '').trim().toLowerCase();\nconst upper = value => String(value || '').trim().toUpperCase();\nconst isDue = value => !value || Date.parse(value) <= now;\nconst leaseExpired = row => !row.lease_until || Date.parse(row.lease_until) <= now;\nconst hasValidEmail = row => /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(String(row.email || '').trim().toLowerCase());\nconst hasValidPhone = row => {\n  const digits = String(row.phone_e164 || row.phone || '').replace(/\\D/g, '');\n  return (digits.length === 10) || (digits.length === 11 && digits.startsWith('1'));\n};\nconst hasSyncIdentifier = row => hasValidEmail(row) || hasValidPhone(row);\nconst isQualified = row => {\n  const qualificationStatus = lower(row.qualification_status);\n  const legacyStatus = lower(row.status);\n  const pipelineStatus = upper(row.pipeline_status);\n  if (qualificationStatus === 'qualified' || legacyStatus === 'qualified') return true;\n  return ['ENRICHED', 'DONE'].includes(pipelineStatus);\n};\nconst isReadyForSync = row => {\n  const syncStatus = lower(row.ghl_sync_status);\n  if (syncStatus === 'failed') return isDue(row.next_retry_at);\n  return true;\n};\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => isQualified(row))\n  .filter(row => hasSyncIdentifier(row))\n  .filter(row => !['synced', 'in_sync'].includes(lower(row.ghl_sync_status)))\n  .filter(row => Number(row.attempt_count || 0) < Number(row.max_attempts || cfg.maxAttempts || 5))\n  .filter(row => isReadyForSync(row) && leaseExpired(row))\n  .slice(0, maxSync)\n  .map(row => ({ json: row }));\n"
+      },
+      "id": "gs-4",
+      "name": "Select Pending Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        950,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst now = new Date();\nconst norm = value => String(value || '').trim();\nconst slug = value => norm(value).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');\nconst normalizeEmail = value => {\n  const email = norm(value).toLowerCase();\n  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ? email : '';\n};\nconst normalizePhone = value => {\n  const digits = String(value || '').replace(/\\D/g, '');\n  if (!digits) return '';\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  if (digits.length === 10) return `+1${digits}`;\n  return '';\n};\nconst customFields = [];\nif (cfg.googleMapsFieldId) customFields.push({ id: cfg.googleMapsFieldId, value: norm($json.google_maps_url) });\nif (cfg.matchedKeywordsFieldId) customFields.push({ id: cfg.matchedKeywordsFieldId, value: norm($json.matched_keywords) });\nif (cfg.dedupeKeyFieldId) customFields.push({ id: cfg.dedupeKeyFieldId, value: norm($json.lead_id || $json.dedupe_key) });\nconst keywordTags = norm($json.matched_keywords).split(',').map(v => v.trim()).filter(Boolean).map(v => `kw_${slug(v)}`);\nconst tags = [...new Set(['source_google_maps', 'industry_med_spa', `city_${slug($json.city)}`, `state_${slug($json.state)}`, ...keywordTags])];\nconst email = normalizeEmail($json.email);\nconst number = normalizePhone($json.phone_e164 || $json.phone);\nconst payload = {\n  locationId: cfg.ghlLocationId,\n  firstName: norm($json.business_name).slice(0, 100),\n  name: norm($json.business_name),\n  companyName: norm($json.business_name),\n  email: email || undefined,\n  phone: number || undefined,\n  website: norm($json.website) || undefined,\n  address1: norm($json.full_address) || undefined,\n  city: norm($json.city) || undefined,\n  state: norm($json.state) || undefined,\n  source: 'Google Maps Lead Gen',\n  tags,\n  customFields,\n};\nreturn {\n  json: {\n    ...$json,\n    pipeline_status: 'SYNCING',\n    status: 'SYNCING',\n    stage: 'crm_sync',\n    attempt_count: Number($json.attempt_count || 0) + 1,\n    max_attempts: Number($json.max_attempts || cfg.maxAttempts || 5),\n    lease_owner: `ghl-sync:${$execution.id || Date.now()}`,\n    lease_until: new Date(now.getTime() + Number(cfg.leaseMinutes || 30) * 60 * 1000).toISOString(),\n    updated_at: now.toISOString(),\n    ghl_tags: tags.join(','),\n    ghl_email: email,\n    ghl_number: number,\n    ghl_request: payload,\n  }\n};\n"
+      },
+      "id": "gs-5",
+      "name": "Prepare GHL Upsert Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ (String($('Workflow Configuration').first().json.ghlBaseUrl || '').trim() || 'https://services.leadconnectorhq.com') + '/contacts/upsert' + (($json.ghl_number || $json.ghl_email) ? ('?' + [($json.ghl_number ? 'number=' + encodeURIComponent($json.ghl_number) : ''), ($json.ghl_email ? 'email=' + encodeURIComponent($json.ghl_email) : '')].filter(Boolean).join('&')) : '') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "={{ $('Workflow Configuration').first().json.ghlApiVersion }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ghl_request) }}",
+        "options": {}
+      },
+      "id": "gs-6",
+      "name": "Upsert Contact in GHL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1460,
+        340
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $json;\nconst previous = $input.item.json;\nconst contactId = response.contact?.id || response.id || '';\nconst syncedAt = new Date().toISOString();\nconst retryAt = attempt => new Date(Date.now() + Math.min(720, 15 * Math.pow(4, Math.max(0, attempt - 1))) * 60 * 1000).toISOString();\nconst attempts = Number(previous.attempt_count || 1);\nconst maxAttempts = Number(previous.max_attempts || 5);\nconst success = Boolean(contactId);\nconst leadId = previous.lead_id || previous.dedupe_key;\nconst dedupeKey = previous.dedupe_key || previous.lead_id;\nreturn {\n  json: {\n    ...previous,\n    lead_id: leadId,\n    dedupe_key: dedupeKey,\n    pipeline_status: success ? 'DONE' : (attempts >= maxAttempts ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE'),\n    status: success ? 'DONE' : (attempts >= maxAttempts ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE'),\n    stage: 'crm_sync',\n    attempt_count: attempts,\n    max_attempts: maxAttempts,\n    next_retry_at: success ? '' : retryAt(attempts),\n    lease_owner: '',\n    lease_until: '',\n    ghl_sync_status: success ? 'synced' : 'failed',\n    ghl_contact_id: contactId,\n    ghl_last_sync_at: syncedAt,\n    ghl_error: success ? '' : JSON.stringify(response),\n    done_at: success ? syncedAt : '',\n    last_error_stage: success ? '' : 'crm_sync',\n    last_error_code: success ? '' : String(response.statusCode || 'GHL_UPSERT_FAILED'),\n    last_error: success ? '' : JSON.stringify(response).slice(0, 1000),\n    schema_version: previous.schema_version || 'v1',\n    sync_log: {\n      log_id: `ghl-sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,\n      lead_id: leadId,\n      dedupe_key: dedupeKey,\n      business_name: previous.business_name,\n      ghl_contact_id: contactId,\n      ghl_sync_status: success ? 'synced' : 'failed',\n      request_tags: previous.ghl_tags || '',\n      request_payload: JSON.stringify(previous.ghl_request),\n      response_body: JSON.stringify(response),\n      logged_at: syncedAt,\n    },\n  }\n};\n"
+      },
+      "id": "gs-7",
+      "name": "Normalize Sync Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1710,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.qualifiedLeadsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "dedupe_key"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "gs-8",
+      "name": "Update Qualified Leads Sync Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1960,
+        260
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $json.sync_log }];"
+      },
+      "id": "gs-9",
+      "name": "Build GHL Sync Log Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.ghlSyncLogSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "log_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "gs-10",
+      "name": "Write GHL Sync Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        420
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      }
+    },
+    {
+      "id": "gs-build-lead-events",
+      "name": "Build GHL Lead Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        600
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all().map(item => ({\n  json: {\n    event_id: 'ghl-' + (item.json.lead_id || item.json.dedupe_key) + '-' + Date.now(),\n    lead_id: item.json.lead_id || item.json.dedupe_key || '',\n    search_job_id: '',\n    workflow_name: 'med-spa-ghl-sync',\n    execution_id: String($execution.id || ''),\n    from_status: 'ENRICHED',\n    to_status: item.json.pipeline_status || item.json.status || '',\n    stage: 'crm_sync',\n    message: item.json.ghl_sync_status === 'synced' ? 'Lead synced to GoHighLevel' : 'GoHighLevel sync failed',\n    event_payload: JSON.stringify({ ghl_contact_id: item.json.ghl_contact_id, ghl_sync_status: item.json.ghl_sync_status }),\n    created_at: now,\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "gs-append-lead-events",
+      "name": "Append GHL Lead Events",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        600
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.leadEventsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "gs-build-error-log",
+      "name": "Build GHL Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        760
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => ['FAILED_RETRYABLE', 'FAILED_TERMINAL'].includes(String(row.pipeline_status || row.status || '').toUpperCase()))\n  .map(row => ({\n    json: {\n      error_id: 'ghl-' + (row.lead_id || row.dedupe_key || Date.now()) + '-' + Date.now(),\n      workflow_name: 'med-spa-ghl-sync',\n      execution_id: String($execution.id || ''),\n      record_type: 'lead',\n      record_id: row.lead_id || row.dedupe_key || '',\n      lead_id: row.lead_id || row.dedupe_key || '',\n      search_job_id: '',\n      stage: 'crm_sync',\n      attempt_count: row.attempt_count || 0,\n      error_code: row.last_error_code || 'GHL_UPSERT_FAILED',\n      error_message: row.last_error || row.ghl_error || '',\n      raw_error_json: JSON.stringify(row),\n      retryable: String(row.pipeline_status || row.status || '').toUpperCase() === 'FAILED_RETRYABLE' ? 'true' : 'false',\n      next_retry_at: row.next_retry_at || '',\n      created_at: now,\n    }\n  }));\n"
+      }
+    },
+    {
+      "id": "gs-append-error-log",
+      "name": "Append GHL Error Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        760
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.errorLogSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "error_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Read Qualified Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Qualified Leads": {
+      "main": [
+        [
+          {
+            "node": "Select Pending Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Pending Sync": {
+      "main": [
+        [
+          {
+            "node": "Prepare GHL Upsert Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare GHL Upsert Payload": {
+      "main": [
+        [
+          {
+            "node": "Upsert Contact in GHL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Contact in GHL": {
+      "main": [
+        [
+          {
+            "node": "Normalize Sync Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Sync Result": {
+      "main": [
+        [
+          {
+            "node": "Update Qualified Leads Sync Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build GHL Sync Log Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build GHL Lead Events",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build GHL Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build GHL Sync Log Row": {
+      "main": [
+        [
+          {
+            "node": "Write GHL Sync Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build GHL Lead Events": {
+      "main": [
+        [
+          {
+            "node": "Append GHL Lead Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build GHL Error Log": {
+      "main": [
+        [
+          {
+            "node": "Append GHL Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "med-spa-ghl"
+    },
+    {
+      "name": "crm-sync"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": ""
+  },
+  "pinData": {}
+}

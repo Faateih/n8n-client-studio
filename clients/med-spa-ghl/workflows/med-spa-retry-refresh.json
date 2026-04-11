@@ -1,0 +1,280 @@
+{
+  "name": "med-spa-retry-refresh",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 0 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "rr-0",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "rr-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg1",
+              "name": "spreadsheetId",
+              "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "cfg2",
+              "name": "qualifiedLeadsSheet",
+              "value": "Qualified Leads",
+              "type": "string"
+            },
+            {
+              "id": "cfg3",
+              "name": "searchQueueSheet",
+              "value": "Search Queue",
+              "type": "string"
+            },
+            {
+              "id": "cfg4",
+              "name": "staleDays",
+              "value": "14",
+              "type": "string"
+            },
+            {
+              "id": "cfg5",
+              "name": "maxRefreshPerRun",
+              "value": "30",
+              "type": "string"
+            },
+            {
+              "id": "cfg5",
+              "name": "maxAttempts",
+              "value": "3",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "rr-2",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        470,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.qualifiedLeadsSheet }}",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "rr-3",
+      "name": "Read Qualified Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        320
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst staleDays = Number(cfg.staleDays || 14);\nconst maxRefresh = Number(cfg.maxRefreshPerRun || 30);\nconst now = Date.now();\nconst cutoff = now - (staleDays * 24 * 60 * 60 * 1000);\nconst rows = $input.all().map(item => item.json).filter(row => {\n  const checked = row.last_checked_at ? Date.parse(row.last_checked_at) : 0;\n  const dueRetry = String(row.pipeline_status || row.status || '').toUpperCase() === 'FAILED_RETRYABLE' && (!row.next_retry_at || Date.parse(row.next_retry_at) <= now);\n  const leaseExpired = row.lease_until && Date.parse(row.lease_until) <= now;\n  const missingEmail = !row.email && !row.contact_page && String(row.qualification_status || '').toLowerCase() === 'qualified';\n  const failedSync = String(row.ghl_sync_status || '').toLowerCase() === 'failed';\n  const stale = checked && checked < cutoff && ['DONE', 'ENRICHED'].includes(String(row.pipeline_status || row.status || '').toUpperCase());\n  return dueRetry || leaseExpired || missingEmail || failedSync || stale;\n}).slice(0, maxRefresh);\nreturn rows.map(row => ({ json: row }));\n"
+      },
+      "id": "rr-4",
+      "name": "Select Refresh Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        970,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nconst slugify = value => String(value || '').toLowerCase().replace(/[^a-z0-9|]+/g, '-').replace(/^-+|-+$/g, '');\nreturn $input.all().map(item => {\n  const keyword = item.json.primary_keyword || item.json.matched_keywords?.split(',')[0] || 'med spa';\n  const operationalKeyword = keyword === 'med spa near me' ? 'med spa' : keyword;\n  const queryText = `${operationalKeyword} in ${item.json.city}, ${item.json.state}`;\n  const searchJobId = slugify(`${item.json.city}|${item.json.state}|${keyword}|refresh|${item.json.lead_id || item.json.dedupe_key}|v1`);\n  return {\n    json: {\n      search_job_id: searchJobId,\n      queue_key: searchJobId,\n      city: item.json.city,\n      state: item.json.state,\n      state_code: item.json.state_code || '',\n      keyword,\n      source_query_template: keyword,\n      source_query_executed: queryText,\n      query_text: queryText,\n      status: 'READY',\n      attempt_count: 0,\n      max_attempts: Number(item.json.max_attempts || $('Workflow Configuration').first().json.maxAttempts || 3),\n      last_run_at: '',\n      next_retry_at: '',\n      lease_owner: '',\n      lease_until: '',\n      apify_run_id: '',\n      apify_dataset_id: '',\n      result_count: '',\n      last_error_code: '',\n      last_error: '',\n      created_at: now,\n      updated_at: now,\n      completed_at: '',\n      schema_version: 'v1',\n    }\n  };\n});\n"
+      },
+      "id": "rr-5",
+      "name": "Build Search Queue Reentry Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1210,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.searchQueueSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "search_job_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "rr-6",
+      "name": "Upsert Refresh Queue Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1450,
+        320
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Read Qualified Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Qualified Leads": {
+      "main": [
+        [
+          {
+            "node": "Select Refresh Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Refresh Candidates": {
+      "main": [
+        [
+          {
+            "node": "Build Search Queue Reentry Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Search Queue Reentry Rows": {
+      "main": [
+        [
+          {
+            "node": "Upsert Refresh Queue Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "med-spa-ghl"
+    },
+    {
+      "name": "refresh"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": ""
+  },
+  "pinData": {}
+}

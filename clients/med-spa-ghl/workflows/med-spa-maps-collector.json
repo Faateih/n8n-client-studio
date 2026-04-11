@@ -1,0 +1,679 @@
+{
+  "name": "med-spa-maps-collector",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "mc-0",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "mc-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg1",
+              "name": "spreadsheetId",
+              "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "cfg2",
+              "name": "searchQueueSheet",
+              "value": "Search Queue",
+              "type": "string"
+            },
+            {
+              "id": "cfg3",
+              "name": "rawResultsSheet",
+              "value": "Raw Results",
+              "type": "string"
+            },
+            {
+              "id": "cfg4",
+              "name": "runLogSheet",
+              "value": "Run Log",
+              "type": "string"
+            },
+            {
+              "id": "cfg6",
+              "name": "apifyActorId",
+              "value": "compass~crawler-google-places",
+              "type": "string"
+            },
+            {
+              "id": "cfg7",
+              "name": "countryCode",
+              "value": "us",
+              "type": "string"
+            },
+            {
+              "id": "cfg8",
+              "name": "language",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "cfg9",
+              "name": "maxQueriesPerRun",
+              "value": "20",
+              "type": "string"
+            },
+            {
+              "id": "cfg10",
+              "name": "maxCrawledPlacesPerSearch",
+              "value": "40",
+              "type": "string"
+            },
+            {
+              "id": "cfg-lock-1",
+              "name": "leaseMinutes",
+              "value": "30",
+              "type": "string"
+            },
+            {
+              "id": "cfg-lock-2",
+              "name": "maxAttempts",
+              "value": "3",
+              "type": "string"
+            },
+            {
+              "id": "cfg-events",
+              "name": "leadEventsSheet",
+              "value": "Lead Events",
+              "type": "string"
+            },
+            {
+              "id": "cfg-errors",
+              "name": "errorLogSheet",
+              "value": "Error Log",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mc-2",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        450,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.searchQueueSheet }}",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "mc-3",
+      "name": "Read Search Queue",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst maxQueries = Number(cfg.maxQueriesPerRun || 20);\nconst now = Date.now();\nconst statusOf = row => String(row.status || '').toUpperCase();\nconst isDue = row => !row.next_retry_at || Date.parse(row.next_retry_at) <= now;\nconst leaseExpired = row => !row.lease_until || Date.parse(row.lease_until) <= now;\nconst selectable = row => {\n  const status = statusOf(row);\n  if (['READY', 'PENDING_REFRESH', 'FAILED_RETRYABLE'].includes(status)) return true;\n  return status === 'RUNNING' && leaseExpired(row);\n};\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => selectable(row))\n  .filter(row => Number(row.attempt_count || 0) < Number(row.max_attempts || cfg.maxAttempts || 3))\n  .filter(row => isDue(row) && leaseExpired(row))\n  .slice(0, maxQueries)\n  .map(row => ({ json: row }));\n"
+      },
+      "id": "mc-4",
+      "name": "Select Pending Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        950,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nconst now = new Date();\nconst leaseUntil = new Date(now.getTime() + Number(cfg.leaseMinutes || 30) * 60 * 1000).toISOString();\nconst leaseOwner = `maps-collector:${$execution.id || Date.now()}`;\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    search_job_id: item.json.search_job_id || item.json.queue_key,\n    queue_key: item.json.queue_key || item.json.search_job_id,\n    status: 'RUNNING',\n    attempt_count: Number(item.json.attempt_count || 0) + 1,\n    max_attempts: Number(item.json.max_attempts || cfg.maxAttempts || 3),\n    last_run_at: now.toISOString(),\n    next_retry_at: '',\n    lease_owner: leaseOwner,\n    lease_until: leaseUntil,\n    last_error_code: '',\n    last_error: '',\n    created_at: item.json.created_at || now.toISOString(),\n    updated_at: now.toISOString(),\n    schema_version: item.json.schema_version || 'v1',\n  },\n}));\n"
+      },
+      "id": "mc-5",
+      "name": "Mark Queries Processing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1190,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.searchQueueSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "search_job_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "mc-6",
+      "name": "Update Search Queue Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1430,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Workflow Configuration').first().json;\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    apify_url: `https://api.apify.com/v2/acts/${cfg.apifyActorId}/run-sync-get-dataset-items`,\n    apify_request: {\n      searchStringsArray: [item.json.keyword === 'med spa near me' ? 'med spa' : item.json.keyword],\n      locationQuery: `${item.json.city}, ${item.json.state}, USA`,\n      maxCrawledPlacesPerSearch: Number(cfg.maxCrawledPlacesPerSearch || 10),\n      language: cfg.language,\n      includeWebResults: false,\n      scrapeSocialMediaProfiles: {\n        facebooks: false,\n        instagrams: false,\n        youtubes: false,\n        tiktoks: false,\n        twitters: false\n      },\n      maximumLeadsEnrichmentRecords: 0,\n      maxImages: 0\n    }\n  }\n}));\n"
+      },
+      "id": "mc-7",
+      "name": "Build Apify Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1190,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "method": "POST",
+        "url": "={{ $json.apify_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.apify_request) }}",
+        "options": {
+          "response": {
+            "neverError": true
+          }
+        }
+      },
+      "id": "mc-8",
+      "name": "Run Google Maps Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1430,
+        460
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": ""
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const requestItems = $('Build Apify Request').all();\nconst now = new Date().toISOString();\nconst normalizeDomain = (value = '') => String(value || '').replace(/^https?:\\/\\//i, '').replace(/^www\\./i, '').split('/')[0].toLowerCase();\nconst normalizePhone = (value = '') => String(value || '').replace(/\\D+/g, '');\nconst normalizeName = value => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();\nconst slugify = value => String(value || '').toLowerCase().replace(/[^a-z0-9|]+/g, '-').replace(/^-+|-+$/g, '');\nfunction identityFor(place, source, businessName, website, phone) {\n  const domain = normalizeDomain(website);\n  const googlePlaceId = place.placeId || place.place_id || place.cid || '';\n  const phoneDigits = normalizePhone(phone);\n  if (domain) return ['domain', domain];\n  if (googlePlaceId) return ['google_place_id', String(googlePlaceId).toLowerCase()];\n  if (phoneDigits) return ['phone', phoneDigits];\n  return ['name_city_state', normalizeName(businessName) + '|' + normalizeName(source.city) + '|' + normalizeName(source.state)];\n}\nreturn $input.all().map((item, index) => {\n  const paired = item.pairedItem;\n  const sourceIndex = Array.isArray(paired) ? paired[0]?.item : paired?.item;\n  const source = requestItems[sourceIndex ?? index]?.json || requestItems[0]?.json || {};\n  const place = item.json;\n  const businessName = place.title || place.name || place.businessName || '';\n  const website = place.website || place.websiteUrl || '';\n  const phone = place.phone || place.phoneNumber || place.phoneUnformatted || '';\n  const [identityStrategy, identityKey] = identityFor(place, source, businessName, website, phone);\n  const leadId = slugify(identityStrategy + '|' + identityKey);\n  const domain = normalizeDomain(website);\n  return {\n    json: {\n      lead_id: leadId,\n      raw_result_key: leadId,\n      dedupe_key: leadId,\n      identity_strategy: identityStrategy,\n      identity_key: identityKey,\n      duplicate_of_lead_id: '',\n      search_job_id: source.search_job_id || source.queue_key,\n      queue_key: source.queue_key || source.search_job_id,\n      apify_run_id: source.apify_run_id || '',\n      apify_dataset_id: source.apify_dataset_id || '',\n      google_place_id: place.placeId || place.place_id || place.cid || '',\n      city: source.city,\n      state: source.state,\n      state_code: source.state_code || '',\n      country: 'US',\n      keyword: source.keyword,\n      source_query_template: source.source_query_template,\n      source_query_executed: source.source_query_executed,\n      business_name: businessName,\n      business_name_normalized: normalizeName(businessName),\n      category: place.categoryName || place.category || '',\n      full_address: place.address || place.fullAddress || '',\n      phone,\n      phone_e164: normalizePhone(phone) ? '+' + normalizePhone(phone) : '',\n      website,\n      domain,\n      google_maps_url: place.url || place.placeUrl || '',\n      rating: place.totalScore || place.rating || '',\n      review_count: place.reviewsCount || place.reviews || '',\n      matched_keywords: source.keyword,\n      pipeline_status: 'SCRAPED',\n      status: 'SCRAPED',\n      qualification_status: 'unknown',\n      stage: 'maps',\n      attempt_count: 0,\n      max_attempts: 3,\n      next_retry_at: '',\n      lease_owner: '',\n      lease_until: '',\n      first_seen_at: now,\n      last_seen_at: now,\n      last_checked_at: '',\n      last_error_stage: '',\n      last_error_code: '',\n      last_error: '',\n      schema_version: 'v1',\n      created_at: now,\n      updated_at: now,\n    }\n  };\n}).filter(item => item.json.business_name || item.json.website || item.json.phone);\n"
+      },
+      "id": "mc-9",
+      "name": "Normalize Maps Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.rawResultsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "lead_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "mc-10",
+      "name": "Upsert Raw Results",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1930,
+        460
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const sourceItems = $('Mark Queries Processing').all();\nconst now = new Date().toISOString();\nconst retryAt = attempt => new Date(Date.now() + Math.min(360, 15 * Math.pow(4, Math.max(0, attempt - 1))) * 60 * 1000).toISOString();\nconst outputs = [];\nconst seen = new Set();\nconst items = $input.all();\nconst getSourceIndex = item => {\n  const paired = item.pairedItem;\n  if (Array.isArray(paired)) return paired[0]?.item;\n  return paired?.item;\n};\nconst getPayload = value => {\n  if (Array.isArray(value)) return value;\n  if (Array.isArray(value?.body)) return value.body;\n  if (Array.isArray(value?.data)) return value.data;\n  if (value?.body && typeof value.body === 'object' && Object.keys(value.body).length) return value.body;\n  if (value?.data && typeof value.data === 'object' && Object.keys(value.data).length) return value.data;\n  return value;\n};\nfor (const item of items) {\n  const sourceIndex = getSourceIndex(item);\n  if (sourceIndex == null || seen.has(sourceIndex)) continue;\n  seen.add(sourceIndex);\n  const source = sourceItems[sourceIndex]?.json;\n  if (!source) continue;\n  const payload = getPayload(item.json);\n  const looksLikePlace = payload && typeof payload === 'object' && !Array.isArray(payload) && (payload.title || payload.name || payload.businessName || payload.website || payload.phone || payload.address);\n  const resultCount = Array.isArray(payload) ? payload.length : (looksLikePlace ? 1 : 0);\n  const isError = resultCount === 0 && (item.json?.errorMessage || item.json?.message || item.json?.statusCode >= 400);\n  const attempts = Number(source.attempt_count || 1);\n  const maxAttempts = Number(source.max_attempts || 3);\n  outputs.push({\n    json: {\n      ...source,\n      search_job_id: source.search_job_id || source.queue_key,\n      queue_key: source.queue_key || source.search_job_id,\n      status: isError ? (attempts >= maxAttempts ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE') : (resultCount > 0 ? 'COMPLETED' : 'NO_RESULTS'),\n      result_count: resultCount,\n      next_retry_at: isError && attempts < maxAttempts ? retryAt(attempts) : '',\n      lease_owner: '',\n      lease_until: '',\n      last_error_code: isError ? String(item.json?.statusCode || 'APIFY_ERROR') : '',\n      last_error: isError ? String(item.json?.errorMessage || item.json?.message || `HTTP ${item.json?.statusCode || 'error'}`) : '',\n      updated_at: now,\n      completed_at: !isError ? now : '',\n      schema_version: source.schema_version || 'v1',\n    }\n  });\n}\nreturn outputs;\n"
+      },
+      "id": "build-final-queue-status",
+      "name": "Build Final Queue Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.searchQueueSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "search_job_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "update-final-queue-status",
+      "name": "Update Final Queue Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1580,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "mc-build-lead-events",
+      "name": "Build Maps Lead Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all().map(item => ({\n  json: {\n    event_id: 'maps-' + (item.json.lead_id || item.json.raw_result_key) + '-' + Date.now(),\n    lead_id: item.json.lead_id || item.json.raw_result_key || '',\n    search_job_id: item.json.search_job_id || item.json.queue_key || '',\n    workflow_name: 'med-spa-maps-collector',\n    execution_id: String($execution.id || ''),\n    from_status: 'NEW',\n    to_status: item.json.pipeline_status || item.json.status || 'SCRAPED',\n    stage: 'maps',\n    message: 'Lead scraped from Apify Google Maps result',\n    event_payload: JSON.stringify({ business_name: item.json.business_name, website: item.json.website, phone: item.json.phone, keyword: item.json.keyword }),\n    created_at: now,\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "mc-append-lead-events",
+      "name": "Append Maps Lead Events",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1840,
+        500
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.leadEventsSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "mc-build-error-log",
+      "name": "Build Maps Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn $input.all()\n  .map(item => item.json)\n  .filter(row => ['FAILED_RETRYABLE', 'FAILED_TERMINAL'].includes(String(row.status || '').toUpperCase()))\n  .map(row => ({\n    json: {\n      error_id: 'maps-' + (row.search_job_id || row.queue_key || Date.now()) + '-' + Date.now(),\n      workflow_name: 'med-spa-maps-collector',\n      execution_id: String($execution.id || ''),\n      record_type: 'search_job',\n      record_id: row.search_job_id || row.queue_key || '',\n      lead_id: '',\n      search_job_id: row.search_job_id || row.queue_key || '',\n      stage: 'maps',\n      attempt_count: row.attempt_count || 0,\n      error_code: row.last_error_code || 'APIFY_ERROR',\n      error_message: row.last_error || '',\n      raw_error_json: JSON.stringify(row),\n      retryable: String(row.status || '').toUpperCase() === 'FAILED_RETRYABLE' ? 'true' : 'false',\n      next_retry_at: row.next_retry_at || '',\n      created_at: now,\n    }\n  }));\n"
+      }
+    },
+    {
+      "id": "mc-append-error-log",
+      "name": "Append Maps Error Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2060,
+        120
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Workflow Configuration').first().json.errorLogSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "error_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Med Spa Lead Gen"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Read Search Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Search Queue": {
+      "main": [
+        [
+          {
+            "node": "Select Pending Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Pending Queries": {
+      "main": [
+        [
+          {
+            "node": "Mark Queries Processing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Apify Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Queries Processing": {
+      "main": [
+        [
+          {
+            "node": "Update Search Queue Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Apify Request": {
+      "main": [
+        [
+          {
+            "node": "Run Google Maps Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Google Maps Scraper": {
+      "main": [
+        [
+          {
+            "node": "Normalize Maps Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Final Queue Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Maps Results": {
+      "main": [
+        [
+          {
+            "node": "Upsert Raw Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Maps Lead Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Queue Status": {
+      "main": [
+        [
+          {
+            "node": "Update Final Queue Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Maps Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Maps Lead Events": {
+      "main": [
+        [
+          {
+            "node": "Append Maps Lead Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Maps Error Log": {
+      "main": [
+        [
+          {
+            "node": "Append Maps Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "med-spa-ghl"
+    },
+    {
+      "name": "maps-collector"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": ""
+  },
+  "pinData": {}
+}
